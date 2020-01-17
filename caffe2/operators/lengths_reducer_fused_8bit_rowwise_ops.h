@@ -8,6 +8,9 @@
 #include "caffe2/operators/reducer_functors.h"
 #include "caffe2/perfkernels/fused_8bit_rowwise_embedding_lookup.h"
 #include "caffe2/utils/math.h"
+#ifdef USE_FBGEMM
+#include "fbgemm/Fbgemm.h"
+#endif
 
 namespace caffe2 {
 
@@ -31,44 +34,92 @@ class SparseLengthsFused8BitRowwiseOp : public Operator<Context> {
     const auto& data = Input(DATA);
     const auto& indices = Input(INDICES);
     const auto& lengths = Input(LENGTHS);
-    auto* output = Output(0);
 
-    CAFFE_ENFORCE_EQ(indices.ndim(), 1, "INDICES must be a vector");
-    CAFFE_ENFORCE_EQ(lengths.ndim(), 1, "LENGTHS must be a vector");
+    CAFFE_ENFORCE_EQ(indices.dim(), 1, "INDICES must be a vector");
+    CAFFE_ENFORCE_EQ(lengths.dim(), 1, "LENGTHS must be a vector");
 
     const float* weights = nullptr;
     if (with_weights) {
       const auto& weights_input = Input(WEIGHTS);
-      CAFFE_ENFORCE_EQ(weights_input.ndim(), 1, "WEIGHTS must be a vector");
+      CAFFE_ENFORCE_EQ(weights_input.dim(), 1, "WEIGHTS must be a vector");
       CAFFE_ENFORCE_EQ(
-          weights_input.size(),
-          indices.size(),
+          weights_input.numel(),
+          indices.numel(),
           "WEIGHTS should have the same length as INDICES.");
       weights = weights_input.template data<float>();
     }
 
-    CAFFE_ENFORCE_GT(data.dim(1), 8, "DATA must have more than 8 columns");
+    CAFFE_ENFORCE_GT(data.size(1), 8, "DATA must have more than 8 columns");
     // Subtract 8 from the #columns of data for the 4 bytes for scale and 4
     // bytes for bias that we use in the fused representation (per row).
-    const std::vector<TIndex> shape = {lengths.dim(0), data.dim(1) - 8};
-    output->Resize(shape);
+    const std::vector<int64_t> shape = {lengths.size(0), data.size(1) - 8};
+    auto* output = Output(0, shape, at::dtype<float>());
+
+#ifdef USE_FBGEMM
+    // Calling the JITed kernel from FBGEMM
+    // Will Remove the call to C2/perfkernels/
+    bool success = fbgemm::EmbeddingSpMDM<std::uint8_t, IndexType>(
+        /*block_size=*/output->size(1),
+        /*output_size=*/output->size(0),
+        /*index_size=*/indices.numel(),
+        /*data_size=*/data.size(0),
+        /*input=*/data.template data<uint8_t>(),
+        /*indices=*/indices.template data<IndexType>(),
+        /*lengths=*/lengths.template data<int>(),
+        /*weights=*/weights,
+        /*normalize_by_lengths=*/is_mean,
+        /*out=*/output->template mutable_data<float>(),
+        /*prefetch distance*/ 16);
+
+    if (success) {
+      return true;
+    }
+
+    int64_t current = 0;
+    auto output_size = output->size(0);
+    auto lengths_ = lengths.template data<IndexType>();
+    auto index_size = indices.numel();
+    auto indices_ = indices.template data<IndexType>();
+    auto data_size = data.size(0);
+
+    for (int m = 0; m < output_size; ++m) {
+      for (int i = 0; i < lengths_[m]; ++i) {
+        CAFFE_ENFORCE_LT(current, index_size);
+        IndexType idx = indices_[current];
+        CAFFE_ENFORCE(
+            0 <= idx && idx < data_size,
+            "Index ",
+            current,
+            " is out of bounds: ",
+            idx,
+            ", range 0 to ",
+            data_size);
+        ++current;
+      }
+    }
+    CAFFE_ENFORCE_EQ(
+        current,
+        index_size,
+        "Your input seems to be incorrect: the sum of lengths values should be "
+        "the size of the indices tensor, but it appears not.");
+#else
 
     Fused8BitRowwiseEmbeddingLookup(
-        /*block_size=*/output->dim(1),
-        /*output_size=*/output->dim(0),
-        /*index_size=*/indices.size(),
-        /*data_size=*/data.dim(0),
+        /*block_size=*/output->size(1),
+        /*output_size=*/output->size(0),
+        /*index_size=*/indices.numel(),
+        /*data_size=*/data.size(0),
         /*input=*/data.template data<uint8_t>(),
         /*indices=*/indices.template data<IndexType>(),
         /*lengths=*/lengths.template data<int>(),
         /*weights=*/weights,
         /*normalize_by_lengths=*/is_mean,
         /*out=*/output->template mutable_data<float>());
+#endif
 
     return true;
   }
 
- private:
   enum {
     DATA = 0,
     WEIGHTS = 1,

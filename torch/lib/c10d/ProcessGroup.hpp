@@ -1,7 +1,10 @@
 #pragma once
 
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 #include <ATen/ATen.h>
@@ -37,11 +40,20 @@ class ProcessGroup {
     virtual ~Work();
 
     // Checks if request has completed. Non-blocking operation.
-    virtual bool isCompleted() const = 0;
+    virtual bool isCompleted();
 
     // Returns if the work completed successfully.
     // If false, the exception function can be called to get details.
-    virtual bool isSuccess() const = 0;
+    virtual bool isSuccess() const;
+
+    // Returns exception if isSuccess() returned false.
+    virtual std::exception_ptr exception() const;
+
+    // Returns source rank if this objects represents a recv-from-any.
+    virtual int sourceRank() const;
+
+    // Returns result tensors, if applicable.
+    virtual std::vector<at::Tensor> result() const;
 
     // Ensures that operations on the output tensors that are invoked
     // after this function returns are correctly sequenced after the
@@ -57,22 +69,31 @@ class ProcessGroup {
     // completion through the `isCompleted` function, it has returned
     // true, and the `isSuccess` function also has returned true.
     //
-    virtual void synchronize() = 0;
+    virtual void synchronize();
 
     // Waits until request completes. Blocking operation.
-    // Returns false if the work completed with an exception.
+    // Throws if the work completed with an exception.
+    // Returns false if the work is aborted.
+    // Otherwise, it always returns true, indicating the work is completed.
     //
     // Functionally equivalent to:
     //
     //   while (!isCompleted()) { /* nop */ }
     //   auto success = isSuccess();
-    //   if (success) { synchronize(); }
+    //   if (!success) { std::rethrow_exception(exception()); }
     //   return success;
     //
-    virtual bool wait() = 0;
+    virtual bool wait();
 
-    // Returns exception if wait() returned false.
-    virtual const std::exception& exception() const = 0;
+    virtual void abort();
+
+   protected:
+    void finish(std::exception_ptr exception = nullptr);
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    bool completed_ = false;
+    std::exception_ptr exception_;
   };
 
   explicit ProcessGroup(int rank, int size);
@@ -86,13 +107,77 @@ class ProcessGroup {
     return size_;
   }
 
-  virtual std::shared_ptr<Work> broadcast(
+  virtual std::shared_ptr<ProcessGroup::Work> broadcast(
       std::vector<at::Tensor>& data,
       const BroadcastOptions& opts = BroadcastOptions()) = 0;
 
-  virtual std::shared_ptr<Work> allreduce(
+  virtual std::shared_ptr<ProcessGroup::Work> allreduce(
       std::vector<at::Tensor>& data,
       const AllreduceOptions& opts = AllreduceOptions()) = 0;
+
+  // This will be moved out of ProcessGroup, do not add dependencies on this
+  // function.
+  virtual std::shared_ptr<ProcessGroup::Work> allreduce_coalesced(
+      std::vector<at::Tensor>& tensors,
+      const AllreduceCoalescedOptions& opts = AllreduceCoalescedOptions()) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> reduce(
+      std::vector<at::Tensor>& tensors,
+      const ReduceOptions& opts = ReduceOptions()) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> allgather(
+      std::vector<std::vector<at::Tensor>>& outputTensors,
+      std::vector<at::Tensor>& inputTensors,
+      const AllgatherOptions& opts = AllgatherOptions()) = 0;
+
+  // Gathers a single tensor inputBuffer into a single buffer outputBuffer that
+  // is interpreted as a contigious collection of size inputBuffer * WORLD_SIZE.
+  // For implementers of ProcessGroup API and advanced users only.
+  virtual std::shared_ptr<ProcessGroup::Work> allgather_base(
+      at::Tensor& outputBuffer,
+      at::Tensor& inputBuffer,
+      const AllgatherOptions& opts = AllgatherOptions()) = 0;
+
+  // This function is deprecated and will be moved out of ProcessGroup to comms:
+  // * do not add dependencies on this function,
+  // * do not implement it in your ProcessGroup, implement allgather_base
+  //   instead.
+  virtual std::shared_ptr<ProcessGroup::Work> allgather_coalesced(
+      std::vector<std::vector<at::Tensor>>& outputTensorLists,
+      std::vector<at::Tensor>& inputTensors,
+      const AllgatherOptions& opts = AllgatherOptions());
+
+  virtual std::shared_ptr<ProcessGroup::Work> gather(
+      std::vector<std::vector<at::Tensor>>& outputTensors,
+      std::vector<at::Tensor>& inputTensors,
+      const GatherOptions& opts = GatherOptions()) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> scatter(
+      std::vector<at::Tensor>& outputTensors,
+      std::vector<std::vector<at::Tensor>>& inputTensors,
+      const ScatterOptions& opts = ScatterOptions()) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> reduce_scatter(
+      std::vector<at::Tensor>& outputTensors,
+      std::vector<std::vector<at::Tensor>>& inputTensors,
+      const ReduceScatterOptions& opts = ReduceScatterOptions()) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> send(
+      std::vector<at::Tensor>& tensors,
+      int dstRank,
+      int tag) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> recv(
+      std::vector<at::Tensor>& tensors,
+      int srcRank,
+      int tag) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> recvAnysource(
+      std::vector<at::Tensor>& tensors,
+      int tag) = 0;
+
+  virtual std::shared_ptr<ProcessGroup::Work> barrier(
+      const BarrierOptions& opts = BarrierOptions()) = 0;
 
  protected:
   const int rank_;

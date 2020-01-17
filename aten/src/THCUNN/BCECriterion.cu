@@ -1,9 +1,9 @@
-#include "THCUNN.h"
-#include "common.h"
-#include "THCHalf.h"
-#include "THCHalfAutoNumerics.cuh"
-#include "THCThrustAllocator.cuh"
-#include "THCApply.cuh"
+#include <THCUNN/THCUNN.h>
+#include <THCUNN/common.h>
+#include <TH/THHalf.h>
+#include <THC/THCNumerics.cuh>
+#include <THC/THCThrustAllocator.cuh>
+#include <THC/THCApply.cuh>
 
 #include <thrust/functional.h>
 #include <thrust/device_ptr.h>
@@ -11,6 +11,7 @@
 #include <thrust/transform.h>
 #include <thrust/transform_reduce.h>
 #include <thrust/system/cuda/execution_policy.h>
+#include <c10/macros/Macros.h>
 
 template <typename T>
 inline __host__ __device__ T eps();
@@ -25,9 +26,9 @@ template <typename T>
 inline __host__ __device__ T safe_log(T a) {
   if (a == 0.)
   {
-    return THCNumerics<T>::log(eps<T>());
+    return std::log(eps<T>());
   }
-  return THCNumerics<T>::log(a);
+  return std::log(a);
 }
 
 template <typename Dtype, typename Acctype>
@@ -39,7 +40,7 @@ struct bce_functor
   {
     Dtype input = thrust::get<0>(x);
     Dtype t = thrust::get<1>(x);
-    assert(input >= 0. && input <= 1.);
+    CUDA_KERNEL_ASSERT(input >= 0. && input <= 1.);
     return - (t * safe_log<Acctype>(ScalarConvert<Dtype, Acctype>::to(input))
         + (Acctype(1) - t) * safe_log<Acctype>(Acctype(1) - input));
   }
@@ -54,7 +55,7 @@ struct bce_updateOutput_no_reduce_functor
       const Dtype *target,
       Dtype *output)
   {
-    assert(*input >= 0. && *input <= 1.);
+    CUDA_KERNEL_ASSERT(*input >= 0. && *input <= 1.);
     *output = ScalarConvert<Acctype, Dtype>::to(
         -(*target * safe_log<Acctype>(ScalarConvert<Dtype, Acctype>::to(*input)) +
           (Acctype(1) - *target) * safe_log<Acctype>(Acctype(1) - *input)));
@@ -71,7 +72,7 @@ struct bce_functor_weights
     Dtype input = thrust::get<0>(x);
     Dtype t = thrust::get<1>(x);
     Dtype w = thrust::get<2>(x);
-    assert(input >= 0. && input <= 1.);
+    CUDA_KERNEL_ASSERT(input >= 0. && input <= 1.);
     return - w * (t * safe_log<Acctype>(ScalarConvert<Dtype, Acctype>::to(input)) +
         (Acctype(1) - t) * safe_log<Acctype>(Acctype(1) - input));
   }
@@ -130,5 +131,5 @@ struct bce_updateGradInput_functor_weights
   }
 };
 
-#include "generic/BCECriterion.cu"
-#include "THCGenerateFloatTypes.h"
+#include <THCUNN/generic/BCECriterion.cu>
+#include <THC/THCGenerateFloatTypes.h>

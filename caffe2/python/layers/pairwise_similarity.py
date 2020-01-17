@@ -17,7 +17,7 @@ class PairwiseSimilarity(ModelLayer):
                  name='pairwise_similarity', **kwargs):
         super(PairwiseSimilarity, self).__init__(model, name, input_record, **kwargs)
         assert isinstance(input_record, schema.Struct), (
-            "Incorrect input type. Excpected Struct, but received: {0}".
+            "Incorrect input type. Expected Struct, but received: {0}".
             format(input_record))
         assert (
             ('all_embeddings' in input_record) ^
@@ -68,13 +68,13 @@ class PairwiseSimilarity(ModelLayer):
             y_embeddings_norm = net.Normalize(self.y_embeddings(), axis=1)
             Y = net.BatchMatMul(
                 [x_embeddings_norm, y_embeddings_norm],
-                [x_embeddings_norm + '_matmul'],
+                [self.get_next_blob_reference(x_embeddings_norm + '_matmul')],
                 trans_b=1,
             )
         elif self.pairwise_similarity_func == "dot":
             Y = net.BatchMatMul(
                 [self.x_embeddings(), self.y_embeddings()],
-                [self.x_embeddings() + '_matmul'],
+                [self.get_next_blob_reference(self.x_embeddings() + '_matmul')],
                 trans_b=1,
             )
         else:

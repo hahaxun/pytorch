@@ -1,10 +1,10 @@
 #include <torch/nn/init.h>
 
-#include <torch/tensor.h>
+#include <torch/types.h>
 #include <torch/utils.h>
 
 #include <ATen/ATen.h>
-#include <ATen/Error.h>
+#include <c10/util/Exception.h>
 
 #include <algorithm>
 #include <cmath>
@@ -18,9 +18,9 @@ namespace {
 struct Fan {
   explicit Fan(Tensor& tensor) {
     const auto dimensions = tensor.ndimension();
-    AT_CHECK(
+    TORCH_CHECK(
         dimensions >= 2,
-        "Fan in and fan out can not be computed for tensor with less than 2 dimensions");
+        "Fan in and fan out can not be computed for tensor with fewer than 2 dimensions");
 
     if (dimensions == 2) {
       in = tensor.size(1);
@@ -34,7 +34,96 @@ struct Fan {
   int64_t in;
   int64_t out;
 };
+
+#define COMPUTE_NONLINEARITY_ENUM(name) /* NOLINT(cppcoreguidelines-macro-usage) */ \
+case Nonlinearity::name: \
+  TORCH_WARN( \
+    "The enum value `torch::nn::init::Nonlinearity::", #name, "` is deprecated and will be removed in 1.5. ", \
+    "Please use `torch::k", #name, "` instead."); \
+  return torch::k##name;
+
+#define COMPUTE_FANMODE_ENUM(name) /* NOLINT(cppcoreguidelines-macro-usage) */ \
+case FanMode::name: \
+  TORCH_WARN( \
+    "The enum value `torch::nn::init::FanMode::", #name, "` is deprecated and will be removed in 1.5. ", \
+    "Please use `torch::k", #name, "` instead."); \
+  return torch::k##name;
+
+NonlinearityType _compute_nonlinearity_type(Nonlinearity nonlinearity) {
+  switch (nonlinearity) {
+    COMPUTE_NONLINEARITY_ENUM(Linear)
+    COMPUTE_NONLINEARITY_ENUM(Conv1D)
+    COMPUTE_NONLINEARITY_ENUM(Conv2D)
+    COMPUTE_NONLINEARITY_ENUM(Conv3D)
+    COMPUTE_NONLINEARITY_ENUM(ConvTranspose1D)
+    COMPUTE_NONLINEARITY_ENUM(ConvTranspose2D)
+    COMPUTE_NONLINEARITY_ENUM(ConvTranspose3D)
+    COMPUTE_NONLINEARITY_ENUM(Sigmoid)
+    COMPUTE_NONLINEARITY_ENUM(Tanh)
+    COMPUTE_NONLINEARITY_ENUM(ReLU)
+    COMPUTE_NONLINEARITY_ENUM(LeakyReLU)
+    default:
+      TORCH_INTERNAL_ASSERT(
+        false,
+        "The enum class `torch::nn::init::Nonlinearity` is deprecated, ",
+        "please don't add any new enum to it. ",
+        "Instead, add the new enum to `torch/csrc/api/include/torch/enum.h` ",
+        "and use `torch::kEnumName` to reference it.")
+  }
+}
+
+FanModeType _compute_fanmode_type(FanMode fanmode) {
+  switch (fanmode) {
+    COMPUTE_FANMODE_ENUM(FanIn);
+    COMPUTE_FANMODE_ENUM(FanOut);
+    default:
+      TORCH_INTERNAL_ASSERT(
+        false,
+        "The enum class `torch::nn::init::Nonlinearity` is deprecated, ",
+        "please don't add any new enum to it. ",
+        "Instead, add the new enum to `torch/csrc/api/include/torch/enum.h` ",
+        "and use `torch::kEnumName` to reference it.")
+  }
+}
+
+double calculate_kaiming_std(
+    Tensor tensor,
+    double a,
+    FanModeType mode,
+    NonlinearityType nonlinearity) {
+  NoGradGuard guard;
+  Fan fan(tensor);
+  const auto gain = calculate_gain(nonlinearity, a);
+  double std = 0.0;
+
+  // Support for `torch::nn::init::FanMode` is deprecated and will be removed in 1.5.
+  if (c10::get_if<FanMode>(&mode)) {
+    mode = _compute_fanmode_type(c10::get<FanMode>(mode));
+  }
+  if (c10::get_if<enumtype::kFanIn>(&mode)) {
+    std = gain / std::sqrt(fan.in);
+  } else {
+    std = gain / std::sqrt(fan.out);
+  }
+  return std;
+}
 } // namespace
+
+double calculate_gain(NonlinearityType nonlinearity, double param) {
+  // Support for `torch::nn::init::Nonlinearity` is deprecated and will be removed in 1.5.
+  if (c10::get_if<Nonlinearity>(&nonlinearity)) {
+    nonlinearity = _compute_nonlinearity_type(c10::get<Nonlinearity>(nonlinearity));
+  }
+  if (c10::get_if<enumtype::kTanh>(&nonlinearity)) {
+    return 5.0 / 3.0;  // NOLINT
+  } else if (c10::get_if<enumtype::kReLU>(&nonlinearity)) {
+    return std::sqrt(2.0);  // NOLINT
+  } else if (c10::get_if<enumtype::kLeakyReLU>(&nonlinearity)) {
+    return std::sqrt(2.0 / (1 + pow(param, 2)));  // NOLINT
+  }
+
+  return 1.0;
+}
 
 Tensor constant_(Tensor tensor, Scalar value) {
   NoGradGuard guard;
@@ -44,7 +133,7 @@ Tensor constant_(Tensor tensor, Scalar value) {
 Tensor dirac_(Tensor tensor) {
   NoGradGuard guard;
 
-  AT_CHECK(
+  TORCH_CHECK(
       tensor.ndimension() >= 3 && tensor.ndimension() <= 5,
       "Only tensors with 3, 4, or 5 dimensions are supported");
 
@@ -69,11 +158,11 @@ Tensor dirac_(Tensor tensor) {
   return tensor;
 }
 
-Tensor eye_(Tensor tensor) {
+Tensor eye_(Tensor matrix) {
   NoGradGuard guard;
-  AT_CHECK(
-      tensor.ndimension() == 2, "Only tensors with 2 dimensions are supported");
-  return torch::eye_out(tensor, tensor.size(0), tensor.size(1));
+  TORCH_CHECK(
+      matrix.ndimension() == 2, "Only tensors with 2 dimensions are supported");
+  return torch::eye_out(matrix, matrix.size(0), matrix.size(1));
 }
 
 Tensor normal_(Tensor tensor, double mean, double std) {
@@ -89,12 +178,12 @@ Tensor ones_(Tensor tensor) {
 Tensor orthogonal_(Tensor tensor, double gain) {
   NoGradGuard guard;
 
-  AT_CHECK(
+  TORCH_CHECK(
       tensor.ndimension() >= 2,
       "Only tensors with 2 or more dimensions are supported");
 
   const auto rows = tensor.size(0);
-  const auto columns = tensor.size(1);
+  const auto columns = tensor.numel() / rows;
   auto flattened = torch::randn({rows, columns});
 
   if (rows < columns) {
@@ -122,7 +211,7 @@ Tensor orthogonal_(Tensor tensor, double gain) {
 Tensor sparse_(Tensor tensor, double sparsity, double std) {
   NoGradGuard guard;
 
-  AT_CHECK(
+  TORCH_CHECK(
       tensor.ndimension() == 2, "Only tensors with 2 dimensions are supported");
 
   const auto rows = tensor.size(0);
@@ -146,6 +235,29 @@ Tensor uniform_(Tensor tensor, double low, double high) {
   return tensor.uniform_(low, high);
 }
 
+Tensor kaiming_uniform_(
+    Tensor tensor,
+    double a,
+    FanModeType mode,
+    NonlinearityType nonlinearity) {
+  NoGradGuard guard;
+  auto std = calculate_kaiming_std(tensor, a, mode, nonlinearity);
+  // Calculate uniform bounds from standard deviation
+  const auto bound = std::sqrt(3.0) * std;
+  return tensor.uniform_(-bound, bound);
+}
+
+Tensor kaiming_normal_(
+    Tensor tensor,
+    double a,
+    FanModeType mode,
+    NonlinearityType nonlinearity) {
+  NoGradGuard guard;
+
+  auto std = calculate_kaiming_std(tensor, a, mode, nonlinearity);
+  return tensor.normal_(0, std);
+}
+
 Tensor xavier_normal_(Tensor tensor, double gain) {
   NoGradGuard guard;
 
@@ -166,6 +278,29 @@ Tensor xavier_uniform_(Tensor tensor, double gain) {
 Tensor zeros_(Tensor tensor) {
   NoGradGuard guard;
   return tensor.zero_();
+}
+
+std::tuple<int64_t, int64_t> _calculate_fan_in_and_fan_out(const Tensor& tensor) {
+  const auto dimensions = tensor.dim();
+  TORCH_CHECK(dimensions >= 2,
+    "Fan in and fan out can not be computed "
+    "for tensor with fewer than 2 dimensions")
+
+  int64_t fan_in, fan_out;
+  if (dimensions == 2) { // Linear
+    fan_in = tensor.size(1);
+    fan_out = tensor.size(0);
+  } else {
+    const auto num_input_fmaps = tensor.size(1);
+    const auto num_output_fmaps = tensor.size(0);
+    auto receptive_field_size = 1;
+    if (tensor.dim() > 2) {
+      receptive_field_size = tensor[0][0].numel();
+    }
+    fan_in = num_input_fmaps * receptive_field_size;
+    fan_out = num_output_fmaps * receptive_field_size;
+  }
+  return std::tie(fan_in, fan_out);
 }
 
 } // namespace init

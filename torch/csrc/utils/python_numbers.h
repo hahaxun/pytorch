@@ -1,9 +1,12 @@
 #pragma once
 
-#include "torch/csrc/python_headers.h"
-#include <stdint.h>
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/jit/tracer.h>
+#include <torch/csrc/python_headers.h>
+#include <torch/csrc/utils/object_ptr.h>
+#include <torch/csrc/utils/tensor_numpy.h>
+#include <cstdint>
 #include <stdexcept>
-#include "torch/csrc/Exceptions.h"
 
 // largest integer that can be represented consecutively in a double
 const int64_t DOUBLE_INT_MAX = 9007199254740992;
@@ -38,6 +41,12 @@ inline PyObject* THPUtils_packDoubleAsInt(double value) {
 }
 
 inline bool THPUtils_checkLong(PyObject* obj) {
+#ifdef USE_NUMPY
+  if (torch::utils::is_numpy_int(obj)) {
+    return true;
+  }
+#endif
+
 #if PY_MAJOR_VERSION == 2
   return (PyLong_Check(obj) || PyInt_Check(obj)) && !PyBool_Check(obj);
 #else
@@ -64,6 +73,7 @@ inline bool THPUtils_checkIndex(PyObject *obj) {
   if (THPUtils_checkLong(obj)) {
     return true;
   }
+  torch::jit::tracer::NoWarn no_warn_guard;
   auto index = THPObjectPtr(PyNumber_Index(obj));
   if (!index) {
     PyErr_Clear();
@@ -78,16 +88,46 @@ inline int64_t THPUtils_unpackIndex(PyObject* obj) {
     if (index == nullptr) {
       throw python_error();
     }
-    obj = index.get();
+    // NB: This needs to be called before `index` goes out of scope and the
+    // underlying object's refcount is decremented
+    return THPUtils_unpackLong(index.get());
   }
   return THPUtils_unpackLong(obj);
 }
 
+inline bool THPUtils_unpackBool(PyObject* obj) {
+  if (obj == Py_True) {
+    return true;
+  } else if (obj == Py_False) {
+    return false;
+  } else {
+    throw std::runtime_error("couldn't convert python object to boolean");
+  }
+}
+
 inline bool THPUtils_checkDouble(PyObject* obj) {
+#ifdef USE_NUMPY
+  if (torch::utils::is_numpy_scalar(obj)) {
+    return true;
+  }
+#endif
 #if PY_MAJOR_VERSION == 2
   return PyFloat_Check(obj) || PyLong_Check(obj) || PyInt_Check(obj);
 #else
   return PyFloat_Check(obj) || PyLong_Check(obj);
+#endif
+}
+
+inline bool THPUtils_checkScalar(PyObject* obj) {
+#ifdef USE_NUMPY
+  if (torch::utils::is_numpy_scalar(obj)) {
+    return true;
+  }
+#endif
+#if PY_MAJOR_VERSION == 2
+  return PyFloat_Check(obj) || PyLong_Check(obj) || PyInt_Check(obj) || PyComplex_Check(obj);
+#else
+  return PyFloat_Check(obj) || PyLong_Check(obj) || PyComplex_Check(obj);
 #endif
 }
 
@@ -116,4 +156,13 @@ inline double THPUtils_unpackDouble(PyObject* obj) {
     throw python_error();
   }
   return value;
+}
+
+inline std::complex<double> THPUtils_unpackComplexDouble(PyObject *obj) {
+  Py_complex value = PyComplex_AsCComplex(obj);
+  if (value.real == -1.0 && PyErr_Occurred()) {
+    throw python_error();
+  }
+
+  return std::complex<double>(value.real, value.imag);
 }
