@@ -45,13 +45,13 @@ def type_argument_translations(arg):
     nullable = (t != 'Generator?' and '?' in t)
 
     # This enables "Generator? x = None and translates to legacy
-    # "Generator* x = nullptr". See [temp translations].
+    # "Generator x = nullptr". See [temp translations].
     if t == 'Generator?' and default == 'None':
-        t = 'Generator*'
-        default = 'nullptr'
+        t = 'Generator'
+        default = 'nullptr'  # TODO(pbelevich): replace with {}
     # Enables Generator? by translating to legacy Generator*.
     elif t == "Generator?":
-        t = 'Generator*'
+        t = 'Generator'
     # Enables Tensor[] by translating to legacy TensorList.
     elif t == 'Tensor[]' or t == 'Tensor?[]':
         t = 'TensorList'
@@ -102,10 +102,6 @@ def type_argument_translations(arg):
         match = re.match(r'Dimname\[(\d+)\]', t)
         t = 'DimnameList'
         size = int(match.group(1))
-
-    # Legacy type sanitization. TODO: Do we really need this?
-    if t == 'Generator*':
-        t = 'Generator *'
 
     if not default:
         pass
@@ -226,6 +222,19 @@ def parse_arguments(args, func_variants, declaration, func_return):
     supported_topt_arguments.append(copy.deepcopy(supported_topt_arguments[1]))
     for arg in supported_topt_arguments[2]:
         arg.update({'default': 'c10::nullopt', 'is_nullable': True})
+    # add explicit support for what is needed for tril_indices / triu_indices
+    supported_topt_arguments.append(
+        [
+            {'name': 'dtype', 'type': 'ScalarType', 'annotation': None, 'kwarg_only': True,
+             'default': 'long', 'is_nullable': True},
+            {'name': 'layout', 'type': 'Layout', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+            {'name': 'device', 'type': 'Device', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+            {'name': 'pin_memory', 'type': 'bool', 'annotation': None, 'kwarg_only': True,
+             'default': 'c10::nullopt', 'is_nullable': True},
+        ]
+    )
 
     corresponding_topts = [
         {'type': 'TensorOptions', 'name': 'options', 'is_nullable': False, 'annotation': None},
