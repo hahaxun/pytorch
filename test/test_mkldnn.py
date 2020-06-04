@@ -67,10 +67,12 @@ class TestMkldnn(TestCase):
 
         # because MKLDNN only supports float32, we need to lessen the precision.
         # these numbers are just empirical results that seem to work.
-        self.assertWarnsRegex(lambda: gradcheck(func, [root], atol=4e-2, rtol=1e-2),
-                              'double precision floating point')
-        self.assertWarnsRegex(lambda: gradgradcheck(func, [root], atol=4e-2, rtol=1e-2),
-                              'double precision floating point')
+        self.assertWarnsRegex(UserWarning,
+                              'double precision floating point',
+                              lambda: gradcheck(func, [root], atol=4e-2, rtol=1e-2))
+        self.assertWarnsRegex(UserWarning,
+                              'double precision floating point',
+                              lambda: gradgradcheck(func, [root], atol=4e-2, rtol=1e-2))
 
     def test_autograd_from_mkldnn(self):
         # MKLDNN only supports float32
@@ -81,8 +83,9 @@ class TestMkldnn(TestCase):
 
         # because MKLDNN only supports float32, we need to lessen the precision.
         # these numbers are just empirical results that seem to work.
-        self.assertWarnsRegex(lambda: gradcheck(func, [root], atol=4e-2, rtol=1e-2),
-                              'double precision floating point')
+        self.assertWarnsRegex(UserWarning,
+                              'double precision floating point',
+                              lambda: gradcheck(func, [root], atol=4e-2, rtol=1e-2))
 
     def test_detach(self):
         root = torch.randn(4, 5, dtype=torch.float32).to_mkldnn().requires_grad_()
@@ -100,6 +103,29 @@ class TestMkldnn(TestCase):
     def test_repr(self):
         self.assertTrue("layout=torch._mkldnn" in str(torch.randn((1, 2, 3, 4),
                                                                   dtype=torch.float, device=torch.device('cpu')).to_mkldnn()))
+
+    def test_conv1d(self):
+        for groups in [1, 4]:
+            N = torch.randint(3, 10, (1,)).item()
+            C = torch.randint(1, 3, (1,)).item() * groups
+            M = torch.randint(1, 3, (1,)).item() * groups
+            x = torch.randn(N, C, 224, dtype=torch.float32)
+            for bias in [True, False]:
+                conv1d = torch.nn.Conv1d(in_channels=C,
+                                         out_channels=M,
+                                         kernel_size=3,
+                                         stride=2,
+                                         padding=1,
+                                         bias=bias,
+                                         groups=groups).float()
+                mkldnn_conv1d = mkldnn_utils.to_mkldnn(copy.deepcopy(conv1d))
+                with torch.backends.mkldnn.flags(enabled=False):
+                    y_aten = conv1d(x)
+                y_mkldnn = mkldnn_conv1d(x.to_mkldnn()).to_dense()
+                self.assertEqual(y_aten, y_mkldnn)
+
+                self._test_serialization(mkldnn_conv1d, (x.to_mkldnn(),))
+                self._test_tracing(mkldnn_conv1d, (x.to_mkldnn(),))
 
     def test_conv2d(self):
         for groups in [1, 4]:

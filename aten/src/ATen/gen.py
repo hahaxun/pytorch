@@ -46,6 +46,10 @@ parser.add_argument(
     action='store_true',
     help='reinterpret CUDA as ROCm/HIP and adjust filepaths accordingly')
 parser.add_argument(
+    '--vulkan',
+    action='store_true',
+    help='Generate Vulkan backend functions')
+parser.add_argument(
     '--op_registration_whitelist',
     nargs='*',
     help='filter op registrations by the whitelist (if set); '
@@ -67,6 +71,7 @@ parser.add_argument(
     help='force it to generate schema-only registrations for all ops, including'
          'those that are not listed on --op_registration_whitelist')
 options = parser.parse_args()
+
 # NB: It is mandatory to NOT use os.path.join here, as the install directory
 # will eventually be ingested by cmake, which does not respect Windows style
 # path slashes.  If you switch this to use os.path.join, you'll get an error
@@ -149,11 +154,11 @@ SPARSE_TYPE_DERIVED_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/SparseTypeDer
 TYPE_DERIVED_H = CodeTemplate.from_file(TEMPLATE_PATH + "/TypeDerived.h")
 TYPE_DEFAULT_H = CodeTemplate.from_file(TEMPLATE_PATH + "/TypeDefault.h")
 TYPE_DEFAULT_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/TypeDefault.cpp")
-OPS_ALREADY_MOVED_TO_C10_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/OpsAlreadyMovedToC10.cpp")
+OPS_ALREADY_MOVED_TO_C10_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/ATenOpList.cpp")
 BACKEND_SELECT_REGISTER_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/BackendSelectRegister.cpp")
 SCHEMA_REGISTER_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/SchemaRegister.cpp")
 TENSOR_H = CodeTemplate.from_file(TEMPLATE_PATH + "/TensorBody.h")
-TENSOR_METHODS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/TensorMethods.h")
+TENSOR_METHODS_CPP = CodeTemplate.from_file(TEMPLATE_PATH + "/TensorMethods.cpp")
 
 FUNCTIONS_H = CodeTemplate.from_file(TEMPLATE_PATH + "/Functions.h")
 
@@ -171,12 +176,14 @@ cuda_file_manager = FileManager()
 def backend_to_devicetype(backend):
     if backend == 'QuantizedCPU':
         return 'CPU'
+    elif backend == 'QuantizedCUDA':
+        return 'CUDA'
     return backend
 
 backends = ['CPU', 'CUDA']
 densities = ['Dense', 'Sparse', 'Mkldnn']  # TODO: layout instead of densities?
 
-quantized_backends = ['QuantizedCPU']
+quantized_backends = ['QuantizedCPU', 'QuantizedCUDA']
 
 # scalar_name, c_type, accreal, is_floating_type
 quantized_scalar_types = [
@@ -196,8 +203,7 @@ top_env = {
     'cpu_type_headers': [],
     'cuda_type_headers': [],
     'function_registrations': [],
-    'aten_ops_with_unboxing_already_handled_by_c10': [],
-    'aten_ops_with_unboxing_not_handled_by_c10_yet': [],
+    'aten_ops': [],
     'type_method_declarations': [],
     'type_method_definitions': [],
     'tensor_method_declarations': [],
@@ -212,6 +218,8 @@ top_env = {
 def is_whitelisted_backend(backend):
     return options.backend_whitelist is None or backend in options.backend_whitelist
 
+def is_cuda_backend(backend):
+    return backend in ("QuantizedCUDA", "CUDA")
 
 def dict_representer(dumper, data):
     return dumper.represent_dict(data.items())
@@ -295,7 +303,7 @@ def generate_storage_type_and_tensor(backend, density, declarations, per_op_regi
     top_env['type_ids'].append(tag + ',')
 
     env['legacy_th_headers'] = []
-    if backend == 'CUDA':
+    if is_cuda_backend(backend):
         env['extra_cuda_headers'] = []
         env['extra_cuda_headers'].append('#include <ATen/DeviceGuard.h>')
         if options.rocm:
@@ -362,13 +370,13 @@ def generate_storage_type_and_tensor(backend, density, declarations, per_op_regi
         fm.write(env['Type'] + ".cpp", SPARSE_TYPE_DERIVED_CPP, env)
     fm.write(env['Type'] + ".h", TYPE_DERIVED_H, env)
 
-    if env['DeviceType'] == 'CPU':
+    if env['DeviceType'] == 'CPU' or env['DeviceType'] == 'Vulkan':
         top_env['cpu_type_headers'].append(
-            '#include "ATen/{}.h"'.format(env['Type']))
+            '#include <ATen/{}.h>'.format(env['Type']))
     else:
         assert env['DeviceType'] == 'CUDA'
         top_env['cuda_type_headers'].append(
-            '#include "ATen/{}.h"'.format(env['Type']))
+            '#include <ATen/{}.h>'.format(env['Type']))
 
 
 # yields (backend, density) tuples
@@ -381,6 +389,8 @@ def iterate_types():
                 yield (backend, density)
     for backend in quantized_backends:
         yield (backend, 'Dense')
+    if options.vulkan:
+        yield('Vulkan', 'Dense')
 
 
 def gen_per_op_registration_filename(opname):
@@ -392,7 +402,7 @@ def gen_per_op_registration_filename(opname):
 # so that the script runs quickly when we are just querying the
 # outputs
 def declare_outputs():
-    core_files = ['TensorBody.h', 'TensorMethods.h', 'OpsAlreadyMovedToC10.cpp']
+    core_files = ['TensorBody.h', 'TensorMethods.cpp', 'ATenOpList.cpp']
     for f in core_files:
         core_file_manager.will_write(f)
     files = ['Declarations.yaml', 'TypeDefault.cpp', 'TypeDefault.h',
@@ -404,7 +414,7 @@ def declare_outputs():
         if not is_whitelisted_backend(full_backend):
             continue
         fm = file_manager
-        if backend == 'CUDA':
+        if is_cuda_backend(backend):
             fm = cuda_file_manager
         for kind in ["Type"]:
             if kind != 'Type' and density == "Sparse":
@@ -503,8 +513,8 @@ def generate_outputs():
 
     core_files = {
         'TensorBody.h': TENSOR_H,
-        'TensorMethods.h': TENSOR_METHODS_H,
-        'OpsAlreadyMovedToC10.cpp': OPS_ALREADY_MOVED_TO_C10_CPP,
+        'TensorMethods.cpp': TENSOR_METHODS_CPP,
+        'ATenOpList.cpp': OPS_ALREADY_MOVED_TO_C10_CPP,
     }
 
     for core_file, core_template_file in core_files.items():
