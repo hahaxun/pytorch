@@ -95,11 +95,11 @@ m.def("${unqual_schema_string}");
 # TORCH_LIBRARY macro invocation
 DEFAULT_UNBOXEDONLY_FUNCTION_REGISTRATION = CodeTemplate("""\
 m.impl("${unqual_operator_name_with_overload}",
-       torch::CppFunction::makeUnboxedOnly(TypeDefault::${type_wrapper_name}));
+       torch::CppFunction::makeUnboxedOnly(&TypeDefault::${type_wrapper_name}));
 """)
 
 DEFAULT_FUNCTION_REGISTRATION = CodeTemplate("""\
-m.impl("${unqual_operator_name_with_overload}", &TypeDefault::${type_wrapper_name});
+m.impl("${unqual_operator_name_with_overload}", TORCH_FN(TypeDefault::${type_wrapper_name}));
 """)
 
 # NB: In the ordinary, TypeDerived code generation work flow, specification
@@ -112,14 +112,14 @@ m.impl("${unqual_operator_name_with_overload}", &TypeDefault::${type_wrapper_nam
 BACKEND_UNBOXEDONLY_FUNCTION_REGISTRATION = CodeTemplate("""\
 m.impl("${unqual_operator_name_with_overload}",
        torch::dispatch(DispatchKey::${Backend},
-                       torch::CppFunction::makeUnboxedOnly(${Type}::${type_wrapper_name}))
+                       torch::CppFunction::makeUnboxedOnly(&${Type}::${type_wrapper_name}))
 );
 """)
 
 BACKEND_FUNCTION_REGISTRATION = CodeTemplate("""\
 m.impl("${unqual_operator_name_with_overload}",
        torch::dispatch(DispatchKey::${Backend},
-                       &${Type}::${type_wrapper_name})
+                       TORCH_FN(${Type}::${type_wrapper_name}))
 );
 """)
 
@@ -144,19 +144,19 @@ ${return_type} Tensor::${api_name}(${method_formals}) const {
 
 # add a method declaration in Functions.h
 FUNCTION_DECLARATION = CodeTemplate("""\
-static inline ${return_type} ${api_name}(${formals_with_defaults});
+CAFFE2_API ${return_type} ${api_name}(${formals_with_defaults});
 """)
 
 # add a method declaration in Functions.h
 DEPRECATED_FUNCTION_DECLARATION = CodeTemplate("""\
-C10_DEPRECATED static inline ${return_type} ${api_name}(${formals_with_defaults});
+C10_DEPRECATED CAFFE2_API ${return_type} ${api_name}(${formals_with_defaults});
 """)
 
 # add method definition in Functions.h
 C10_FUNCTION_DEFINITION = CodeTemplate("""\
 
 // ${schema_string}
-static inline ${return_type} ${api_name}(${formals}) {
+${return_type} ${api_name}(${formals}) {
 #ifdef USE_STATIC_DISPATCH
     ${static_dispatch_function_body}
 #else
@@ -513,7 +513,6 @@ FunctionOption = TypedDict('FunctionOption', {
     'type_definition_body': List[str],
     'type_method_definition_dispatch': str,
     'variants': str,
-    'with_gil': bool,
 })
 
 OutputDeclaration = NamedTuple('OutputDeclaration', [

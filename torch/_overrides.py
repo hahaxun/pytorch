@@ -140,6 +140,8 @@ def get_ignored_functions():
         torch.autocast_decrement_nesting,
         torch.nn.functional.hardswish,
         torch.is_vulkan_available,
+        torch.is_deterministic,
+        torch.set_deterministic
     )
 
 def get_testing_overrides():
@@ -166,6 +168,7 @@ def get_testing_overrides():
         torch.adaptive_avg_pool1d: lambda input, output_size: -1,
         torch.adaptive_max_pool1d: lambda inputs, output_size: -1,
         torch.acos: lambda input, out=None: -1,
+        torch.acosh: lambda input, out=None: -1,
         torch.add: lambda input, other, out=None: -1,
         torch.addbmm: lambda input, batch1, batch2, alpha=1, beta=1, out=None: -1,
         torch.addcdiv: lambda input, tensor1, tensor2, value=1, out=None: -1,
@@ -183,8 +186,10 @@ def get_testing_overrides():
         torch.argmin: lambda input: -1,
         torch.argsort: lambda input: -1,
         torch.asin: lambda input, out=None: -1,
+        torch.asinh: lambda input, out=None: -1,
         torch.atan: lambda input, out=None: -1,
         torch.atan2: lambda input, other, out=None: -1,
+        torch.atanh: lambda input, out=None: -1,
         torch.avg_pool1d: lambda input, kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True: -1,
         torch.baddbmm: lambda input, batch1, batch2, alpha=1, beta=1, out=None: -1,
         torch.batch_norm: lambda input, weight, bias, running_mean, running_var, training, momentum, eps, cudnn_enabled: -1,
@@ -291,6 +296,8 @@ def get_testing_overrides():
         torch.fft: lambda input, signal_ndim, normalized=False: -1,
         torch.flatten: lambda input, start_dim=0, end_dim=-1: -1,
         torch.flip: lambda input, dims: -1,
+        torch.fliplr: lambda input: -1,
+        torch.flipud: lambda input: -1,
         torch.frobenius_norm: lambda input, dim=None, keepdim=False, out=None: -1,
         torch.floor: lambda input, out=None: -1,
         torch.floor_divide: lambda input, other: -1,

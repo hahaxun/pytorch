@@ -238,6 +238,8 @@ view of a storage and defines numeric operations on it.
    .. automethod:: cos_
    .. automethod:: cosh
    .. automethod:: cosh_
+   .. automethod:: acosh
+   .. automethod:: acosh_
    .. automethod:: cpu
    .. automethod:: cross
    .. automethod:: cuda
@@ -290,6 +292,8 @@ view of a storage and defines numeric operations on it.
    .. automethod:: fill_
    .. automethod:: flatten
    .. automethod:: flip
+   .. automethod:: fliplr
+   .. automethod:: flipud
    .. automethod:: float
    .. automethod:: floor
    .. automethod:: floor_
@@ -473,6 +477,8 @@ view of a storage and defines numeric operations on it.
    .. automethod:: sin_
    .. automethod:: sinh
    .. automethod:: sinh_
+   .. automethod:: asinh
+   .. automethod:: asinh_
    .. automethod:: size
    .. automethod:: slogdet
    .. automethod:: solve
@@ -507,6 +513,8 @@ view of a storage and defines numeric operations on it.
    .. automethod:: tan_
    .. automethod:: tanh
    .. automethod:: tanh_
+   .. automethod:: atanh
+   .. automethod:: atanh_
    .. automethod:: tolist
    .. automethod:: topk
    .. automethod:: to_sparse
