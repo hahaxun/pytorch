@@ -7,6 +7,7 @@
 #include <torch/csrc/jit/passes/fuse_linear.h>
 #include <torch/csrc/jit/passes/graph_rewrite_helper.h>
 #include <torch/csrc/jit/passes/quantization/helper.h>
+#include <torch/csrc/jit/passes/remove_mutation.h>
 
 #include <regex>
 #include <stack>
@@ -34,7 +35,6 @@ using QConfigTypePtrMap =
 using NameModuleVector = std::vector<std::pair<std::string, Module>>;
 using OptionalModuleVector = std::vector<c10::optional<Module>>;
 using ModuleMethodVector = std::vector<std::pair<Module, std::string>>;
-using graph_rewrite_helper::MatchFilter;
 using graph_rewrite_helper::PatternInfo;
 using graph_rewrite_helper::replaceConvolutionWithAtenConv;
 
@@ -176,10 +176,11 @@ class ModuleCloneHelper {
       // remapping type for module instance
       if (node->kind() == prim::CallMethod) {
         Value* instance = node->inputs()[0];
-        auto path = getModuleAccessPath(instance, self);
-        auto child = findChildModule(source, path);
-        auto qconfig = module_qconfig_map.at(child._ivalue());
-        instance->setType(type_remap_fn(instance->type(), qconfig));
+        auto child_opt = getInvokedModuleOpt(source, node, self);
+        if (child_opt.has_value()) {
+          auto qconfig = module_qconfig_map.at(child_opt->_ivalue());
+          instance->setType(type_remap_fn(instance->type(), qconfig));
+        }
       }
       // We don't remap output and the remapping of module type
       // will be done in CallMethod, we don't support type remapping
@@ -242,12 +243,18 @@ class ModuleCloneHelper {
     remapTypes(graph.get(), source, target, module_qconfig_map, type_remap_fn);
     // remap self
     graph->inputs()[0]->setType(target.type());
+    // we only support %self being Module in the arguments of function
+    auto schema_type_remap_fn = [&](TypePtr type_ptr) {
+      return type_remap_fn(type_ptr, module_qconfig_map.at(source._ivalue()));
+    };
+    auto schema =
+        method.getSchema().cloneWithRemappedTypes(schema_type_remap_fn);
     const auto this_method_name =
         c10::QualifiedName(*target.type()->name(), method.name());
     auto copied = target._ivalue()->compilation_unit()->create_function(
         this_method_name, graph);
     target.type()->addMethod(copied);
-    // we'll use default schema for cloned method
+    copied->setSchema(std::move(schema));
   }
 };
 
@@ -902,8 +909,10 @@ ModuleMethodVector InsertObserversHelper::getInvokedMethods(
         continue;
       }
       if (n->kind() == prim::CallMethod) {
-        invoked_methods.push_back(std::make_pair(
-            getInvokedModule(module, n, graph->inputs()[0]), n->s(attr::name)));
+        auto m_opt = getInvokedModuleOpt(module, n, graph->inputs()[0]);
+        if (m_opt.has_value()) {
+          invoked_methods.push_back(std::make_pair(*m_opt, n->s(attr::name)));
+        }
       }
 
       for (Block* subblock : n->blocks()) {
@@ -1044,7 +1053,11 @@ void InsertObserversHelper::fillBoundaryValueMap(
         // for CallFunction start with actual input
         size_t input_offset;
         if (n->kind() == prim::CallMethod) {
-          auto m = getInvokedModule(module, n, self);
+          auto m_opt = getInvokedModuleOpt(module, n, self);
+          if (!m_opt.has_value()) {
+            continue;
+          }
+          auto m = *m_opt;
           g = m.get_method(n->s(attr::name)).graph();
           input_offset = 0;
         } else {
@@ -1110,6 +1123,7 @@ void InsertObserversHelper::preprocess(
   // fuse decomposed linear into aten::linear
   FuseLinear(graph);
   replaceConvolutionWithAtenConv(graph);
+  RemoveListMutation(graph);
 }
 
 void InsertObserversHelper::analyze(
@@ -1358,7 +1372,11 @@ InsertObserversHelper::insertObserversFor(
         size_t input_offset;
         bool is_udf_for_subblock = is_user_defined_function;
         if (n->kind() == prim::CallMethod) {
-          m = getInvokedModule(module, n, self);
+          auto m_opt = getInvokedModuleOpt(module, n, self);
+          if (!m_opt.has_value()) {
+            continue;
+          }
+          m = *m_opt;
           g = m.get_method(n->s(attr::name)).graph();
           input_offset = 0;
         } else { // CallFunction
@@ -1447,7 +1465,8 @@ InsertObserversHelper::insertObserversFor(
                 aggregated_output_observe_state ==
                     subblock_output_observe_state,
                 "branches for `if` should return values that are observed "
-                "consistently");
+                "consistently, if node:",
+                *n);
           } else {
             aggregated_output_observe_state = subblock_output_observe_state;
           }
@@ -1514,6 +1533,7 @@ void InsertObserversHelper::propagateObservedProperty(
           observed_values_.count(v) || block_observed_values.count(v);
     }
     if (all_observed) {
+      GRAPH_DEBUG("Pass through observed property in node:", *output->node());
       // This is to propagate observed property through
       // all ops that doesn't require observation
       block_observed_values.insert(output);
